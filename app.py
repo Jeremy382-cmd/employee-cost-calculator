@@ -4,12 +4,22 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+import requests
+
+# Fetch dynamic rates for CPP and EI (2025)
+def fetch_contribution_rates():
+    # Hardcoded from reliable 2025 sources
+    cpp_employer_rate = 5.95  # Employer rate in %
+    cpp_employee_rate = 5.95
+    ei_employee_rate = 1.64
+    ei_employer_rate = ei_employee_rate * 1.4  # Employer pays 1.4x
+    return cpp_employer_rate, cpp_employee_rate, ei_employer_rate, ei_employee_rate
 
 # Employee Class
 class Employee:
     def __init__(self, name, employment_type, base_wage, weekly_hours, overtime_hours,
                  vacation_pct, cpp_rate, ei_rate, wsib_rate,
-                 health_benefits, bonuses, training_ppe):
+                 health_benefits):
         self.name = name
         self.employment_type = employment_type
         self.base_wage = base_wage
@@ -20,8 +30,6 @@ class Employee:
         self.ei_rate = ei_rate
         self.wsib_rate = wsib_rate
         self.health_benefits = health_benefits
-        self.bonuses = bonuses
-        self.training_ppe = training_ppe
 
     def average_hourly_rate(self):
         overtime_wage = self.base_wage * 1.5
@@ -34,16 +42,19 @@ class Employee:
         return {
             "Base Wage": base,
             "Vacation Pay": base * self.vacation_pct / 100,
-            "CPP": base * self.cpp_rate / 100,
-            "EI": base * self.ei_rate / 100,
+            "CPP (Employer)": base * self.cpp_rate / 100,
+            "CPP (Employee)": base * cpp_employee_rate / 100,
+            "EI (Employer)": base * self.ei_rate / 100,
+            "EI (Employee)": base * ei_employee_rate / 100,
             "WSIB": base * self.wsib_rate / 100,
             "Health Benefits": self.health_benefits,
-            "Bonuses": self.bonuses,
-            "Training & PPE": self.training_ppe,
         }
 
     def total_hourly_cost(self):
-        return sum(self.cost_components().values())
+        c = self.cost_components()
+        employer_total = c["Base Wage"] + c["Vacation Pay"] + c["CPP (Employer)"] + c["EI (Employer)"] + c["WSIB"] + c["Health Benefits"]
+        employee_total = c["CPP (Employee)"] + c["EI (Employee)"]
+        return employer_total, employee_total, employer_total * (self.weekly_hours + self.overtime_hours) * 52, employee_total * (self.weekly_hours + self.overtime_hours) * 52
 
     def to_dict(self):
         return self.__dict__
@@ -64,6 +75,21 @@ def save_profiles(profiles):
 # Streamlit UI
 st.title("Ontario Employee Cost Calculator")
 
+# Fetch dynamic contribution rates
+cpp_rate, cpp_employee_rate, ei_rate, ei_employee_rate = fetch_contribution_rates()
+
+# Display current dynamic rates
+with st.expander("ℹ️ Contribution Rate Information", expanded=True):
+    st.markdown("""
+    - **CPP (Canada Pension Plan):**
+        - Employer Contribution: **5.95%**
+        - Employee Contribution: **5.95%**
+    - **EI (Employment Insurance):**
+        - Employer Contribution: **2.30%** (1.4x employee rate)
+        - Employee Contribution: **1.64%**
+    - **WSIB:** Manually entered based on your NAICS industry rate.
+    """)
+
 profiles = load_profiles()
 profile_names = list(profiles.keys())
 
@@ -81,24 +107,23 @@ base_wage = st.sidebar.number_input("Base Hourly Wage ($)", min_value=0.0, step=
 weekly_hours = st.sidebar.number_input("Average Weekly Hours", min_value=0, step=1, value=p.get("weekly_hours", 0))
 overtime_hours = st.sidebar.number_input("Overtime Hours/Week", min_value=0, step=1, value=p.get("overtime_hours", 0))
 vacation_pct = st.sidebar.number_input("Vacation Pay (%)", min_value=0.0, step=0.1, value=p.get("vacation_pct", 4.0))
-cpp_rate = 5.95
-ei_rate = 2.32
 wsib_rate = st.sidebar.number_input("WSIB Rate (%)", min_value=0.0, step=0.01, value=p.get("wsib_rate", 1.30))
 health_benefits = st.sidebar.number_input("Health Benefits ($/hr)", min_value=0.0, step=0.01, value=p.get("health_benefits", 0.0))
-bonuses = st.sidebar.number_input("Bonuses/Allowances ($/hr)", min_value=0.0, step=0.01, value=p.get("bonuses", 0.0))
-training_ppe = st.sidebar.number_input("Training & PPE ($/hr)", min_value=0.0, step=0.01, value=p.get("training_ppe", 0.0))
 
 if st.sidebar.button("Calculate Cost"):
     emp = Employee(name, employment_type, base_wage, weekly_hours, overtime_hours,
                    vacation_pct, cpp_rate, ei_rate, wsib_rate,
-                   health_benefits, bonuses, training_ppe)
+                   health_benefits)
     components = emp.cost_components()
-    total = emp.total_hourly_cost()
+    employer_total, employee_total, annual_employer_total, annual_employee_total = emp.total_hourly_cost()
 
     st.subheader(f"Hourly Cost Breakdown for {name}")
-    df = pd.DataFrame(components.items(), columns=["Cost Component", "$/hr"])
+    df = pd.DataFrame(components.items(), columns=["Cost Component", "$ per Hour"])
     st.dataframe(df)
-    st.metric(label="Total Hourly Cost", value=f"${total:.2f}")
+    st.metric(label="Employer Hourly Cost", value=f"${employer_total:.2f}")
+    st.metric(label="Employee Deductions", value=f"${employee_total:.2f}")
+    st.metric(label="Annual Employer Cost", value=f"${annual_employer_total:,.2f}")
+    st.metric(label="Annual Employee Deductions", value=f"${annual_employee_total:,.2f}")
 
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button("Download Cost Breakdown as CSV", csv, f"{name}_hourly_cost.csv", "text/csv")
