@@ -1,1 +1,1 @@
-# Final app code goes here
+# Fixed app.py placeholder
